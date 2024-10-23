@@ -92,6 +92,16 @@ let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
   function _ -> failwith "compile_operand unimplemented"
 
 
+  
+let compile_operand_temp (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
+    let open Asm in
+    fun ll_op -> begin match ll_op with 
+        | Null -> Movq, [ ~$0; dest ]
+        | Const x -> Movq, [ Imm (Lit x); dest ]
+        | Id u -> Movq, [ lookup ctxt.layout u; dest ]
+        | _ -> failwith "globals :("
+    end
+
 
 (* compiling call  ---------------------------------------------------------- *)
 
@@ -227,9 +237,18 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
 
 (* compiling terminators  --------------------------------------------------- *)
 
+let function_return_label = "RETURNBLOCK"
+
 (* prefix the function name [fn] to a label to ensure that the X86 labels are
    globally unique . *)
-let mk_lbl (fn:string) (l:string) = fn ^ "." ^ l
+let mk_lbl (fn:string) (l:string) = 
+    if l == function_return_label then
+        failwith "exit label is reserved"
+    else
+        fn ^ "." ^ l
+
+(* lets hope llvm will never make a label called exit *)
+let mk_return_lbl (fn:string) = fn ^ "." ^ function_return_label
 
 (* Compile block terminators is not too difficult:
 
@@ -243,8 +262,29 @@ let mk_lbl (fn:string) (l:string) = fn ^ "." ^ l
 
    [fn] - the name of the function containing this terminator
 *)
-let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list =
-  failwith "compile_terminator not implemented"
+let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = begin
+
+    let open Asm in
+    match t with 
+    | Ret (t, Some op) -> [   (* idk whats with the type, ignore for now *)
+        compile_operand_temp ctxt ~%Rax op;
+        (Jmp, [ ~$$(mk_return_lbl fn) ])
+    ] 
+    | Ret (t, None) -> [
+        (Jmp, [ ~$$(mk_return_lbl fn) ])
+    ]
+    | Br lbl -> [
+        (Jmp, [ ~$$(mk_lbl fn lbl) ])
+    ]
+    | Cbr (op, lbl1, lbl2) -> [
+        compile_operand_temp ctxt ~%Rax op;
+        (Andq, [ ~$1; ~%Rax ]); (* only look at last bit, unsure if necessary *)
+        (Cmpq, [ ~$1; ~%Rax ]);
+        (J Eq, [ ~$$ (mk_lbl fn lbl1) ]);
+        (Jmp, [ ~$$ (mk_lbl fn lbl2) ]);
+    ]
+end
+
 
 
 (* compiling blocks --------------------------------------------------------- *)
@@ -254,8 +294,16 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list =
    [ctxt] - the current context
    [blk]  - LLVM IR code for the block
 *)
-let compile_block (fn:string) (ctxt:ctxt) (blk:Ll.block) : ins list =
-  failwith "compile_block not implemented"
+let compile_block (fn:string) (ctxt:ctxt) (blk:Ll.block) : ins list = begin
+
+    (* let block_ins = List.concat_map (compile_insn ctxt) blk.insns in *)
+    let block_ins = [] in
+
+    let term_ins = compile_terminator fn ctxt (snd blk.term) in
+
+    block_ins @ term_ins
+end
+
 
 let compile_lbl_block fn lbl ctxt blk : elem =
   Asm.text (mk_lbl fn lbl) (compile_block fn ctxt blk)
@@ -272,9 +320,12 @@ let compile_lbl_block fn lbl ctxt blk : elem =
 
    [ NOTE: the first six arguments are numbered 0 .. 5 ]
 *)
-let arg_loc (n : int) : operand =
-failwith "arg_loc not implemented"
-
+let arg_loc (n : int) : operand Option.t =
+    if n > 5 then
+        let imm = Int64.of_int (8 * (n - 5)) in
+        Some (Ind3 (Lit imm, Rbp))
+    else
+        None
 
 (* We suggest that you create a helper function that computes the
    stack layout for a given function declaration.
@@ -285,8 +336,43 @@ failwith "arg_loc not implemented"
    - see the discussion about locals
 
 *)
-let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout =
-failwith "stack_layout not implemented"
+let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout * int = begin
+    (* 
+    * this assumes the following happens every function call at beginning and end:
+    * - pushq %rbp
+    * - movq %rsp, %rbp
+    *)
+    let lo: layout ref = ref [] in
+    let rel_rsp = ref 0 in
+
+    let push_uid (u:uid) : unit = begin
+        rel_rsp := !rel_rsp - 8; (* simulate push instruction *)
+        let imm = Int64.of_int !rel_rsp in
+        let pair = (u, Ind3(Lit imm, Rbp)) in
+        lo := pair :: !lo
+    end in
+    
+    (* args *)
+    let push_arg (arg_index: int) (a: uid) : unit = begin 
+        match (arg_loc arg_index) with
+            (* on parent stack *)
+            | Some op -> lo := (a, op) :: !lo
+            (* not on stack, add to current *)
+            | None -> push_uid a
+    end in
+
+    List.iteri push_arg args;
+
+    (* cfg *)
+    let find_block_uids (b:block) = List.map (fun x -> fst x) b.insns in
+    let cfg_uids = (find_block_uids block) @ 
+        List.concat_map (fun (_, b) -> find_block_uids b) lbled_blocks in
+
+    List.iter push_uid cfg_uids;
+
+    (* return layout and final relative stack pointer *)
+    !lo, !rel_rsp
+end
 
 (* The code for the entry-point of a function must do several things:
 
@@ -304,8 +390,63 @@ failwith "stack_layout not implemented"
    - the function entry code should allocate the stack storage needed
      to hold all of the local stack slots.
 *)
-let compile_fdecl (tdecls:(tid * ty) list) (name:string) ({ f_ty; f_param; f_cfg }:fdecl) : prog =
-failwith "compile_fdecl unimplemented"
+let compile_fdecl (tdecls:(tid * ty) list) (name:string) ({ f_ty; f_param; f_cfg }:fdecl) : prog = begin
+let open Asm in
+
+    let layout, layout_rel_rsp = stack_layout f_param f_cfg in
+
+    let ctxt: ctxt = { tdecls; layout } in
+
+    (* CREATE FUNCTION START BOILERPLATE *)
+
+    let start_boilerplate: ins list ref = ref [
+        (* init rbp *)
+        (Pushq, [ ~%Rbp ]);
+        (Movq, [ ~%Rsp; ~%Rbp ]);
+        (Addq, [ ~$layout_rel_rsp; ~%Rsp ]); 
+        (* layout_rel_rsp points to the stack pointer after all locals would have been pushq'ed *)
+        (* this marks the next calls rsp. rsp should not be modified anywhere else *)
+    ] in
+
+    (* moves all register args into the new stack frame *)
+    let push_arg_mov (index:int) (r:reg) : unit = begin 
+        if index < List.length f_param then begin
+            let param = List.nth f_param index in
+            match List.assoc_opt param layout with
+                | Some op -> begin
+                    start_boilerplate := !start_boilerplate @ [
+                        (Movq, [ Reg r; op ]);        
+                    ]
+                end
+                | None -> ()
+        end
+    end in 
+    List.iteri push_arg_mov [ Rdi; Rsi; Rdx; Rcx; R08; R09; ];
+
+    (* FUNCTION END BOILERPLATE *)
+
+    let end_boilerplate: ins list ref = ref [
+        (Movq, [ ~%Rbp; ~%Rsp ]); (* sets rsp back to the place where rbp was stored *)
+        (Popq, [ ~%Rbp ]); (* restore *)
+        (Retq, []);
+    ] in
+
+    (* COMPILE CONTENTS *)
+
+    let ll_entry_block, ll_remaining_blocks = f_cfg in
+
+    let asm_entry_block = Asm.text name 
+        (!start_boilerplate @ (compile_block name ctxt ll_entry_block)) in
+    
+    let asm_intermediate_blocks = List.map 
+        (fun (lbl, block) -> compile_lbl_block name lbl ctxt block) ll_remaining_blocks in
+
+    let asm_return_block = Asm.text (mk_return_lbl name) !end_boilerplate in
+
+    let fun_prog = [ asm_entry_block ] @ asm_intermediate_blocks @ [ asm_return_block ] in
+
+    fun_prog
+end
 
 
 
@@ -325,7 +466,8 @@ and compile_gdecl (_, g) = compile_ginit g
 
 
 (* compile_prog ------------------------------------------------------------- *)
-let compile_prog {tdecls; gdecls; fdecls} : X86.prog =
+let compile_prog ({tdecls; gdecls; fdecls}: Ll.prog) : X86.prog =
   let g = fun (lbl, gdecl) -> Asm.data (Platform.mangle lbl) (compile_gdecl gdecl) in
   let f = fun (name, fdecl) -> compile_fdecl tdecls name fdecl in
   (List.map g gdecls) @ (List.map f fdecls |> List.flatten)
+
