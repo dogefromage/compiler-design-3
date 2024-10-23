@@ -154,7 +154,7 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
   | I1 -> 8
   | I8 -> 0
   | I64 -> 8
-  | Ptr ptr_type -> 8
+  | Ptr ptr_type -> 8 
   | Struct struct_member_types -> List.fold_right (fun struct_member_type total_size -> size_ty tdecls struct_member_type + total_size) struct_member_types 0
   | Array (length, array_type) -> (length * size_ty tdecls array_type)
   | Fun (params_type, out_type) -> 0
