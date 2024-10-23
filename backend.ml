@@ -139,7 +139,18 @@ let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
      Your function should simply return 0 in those cases
 *)
 let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
-failwith "size_ty not implemented"
+  begin match t with
+  | Void -> 0
+  | I1 -> 8
+  | I8 -> 0
+  | I64 -> 8
+  | Ptr ptr_type -> 8
+  | Struct struct_member_types -> List.fold_right (fun struct_member_type total_size -> size_ty tdecls struct_member_type + total_size) struct_member_types 0
+  | Array (length, array_type) -> (length * size_ty tdecls array_type)
+  | Fun (params_type, out_type) -> 0
+  | Namedt type_id -> let corresponding_ty = List.assoc type_id tdecls in
+                      size_ty tdecls corresponding_ty
+  end
 
 
 
@@ -170,7 +181,19 @@ failwith "size_ty not implemented"
       by the path so far
 *)
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list =
-failwith "compile_gep not implemented"
+begin match op with
+| (Ptr ptr_type, operand_type) -> 
+  let list_length = List.length path in
+    for i = 0 to list_length - 1 do
+        let index = List.nth path i in
+          begin match ptr_type with
+            | Struct struct_member_types -> 
+            | Array (array_length, array_type) ->
+    done; 
+
+| (_, _) -> failwith "compile_gep: not a pointer"
+failwith "compile_gep: path not valid"
+end
 
 
 
