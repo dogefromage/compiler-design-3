@@ -89,18 +89,13 @@ let lookup m x = List.assoc x m
    destination (usually a register).
 *)
 let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
-  function _ -> failwith "compile_operand unimplemented"
-
-
-  
-let compile_operand_temp (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
-    let open Asm in
-    fun ll_op -> begin match ll_op with 
-        | Null -> Movq, [ ~$0; dest ]
-        | Const x -> Movq, [ Imm (Lit x); dest ]
-        | Id u -> Movq, [ lookup ctxt.layout u; dest ]
-        | _ -> failwith "globals :("
-    end
+  let open Asm in
+  fun ll_op -> begin match ll_op with 
+      | Null -> Movq, [ ~$0; dest ]
+      | Const x -> Movq, [ Imm (Lit x); dest ]
+      | Id u -> Movq, [ lookup ctxt.layout u; dest ]
+      | Gid g -> Leaq, [ Ind3 (Lbl (Platform.mangle g), Rip); dest]
+  end
 
 
 (* compiling call  ---------------------------------------------------------- *)
@@ -190,19 +185,35 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
       in (4), but relative to the type f the sub-element picked out
       by the path so far
 *)
-let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list =
-begin match op with
-| (Ptr ptr_type, operand_type) -> 
-  let list_length = List.length path in
-    for i = 0 to list_length - 1 do
-        let index = List.nth path i in
-          begin match ptr_type with
-            | Struct struct_member_types -> 
-            | Array (array_length, array_type) ->
-    done; 
 
-| (_, _) -> failwith "compile_gep: not a pointer"
-failwith "compile_gep: path not valid"
+let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand list) : ins list =
+  let open Asm in
+  (*The instructions required to add the offset for the current type (Array/Struct)*)
+  let add_insns = 
+    match current_type with
+    | Array (length, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)), (*Loads the current indexvalue into R10*)
+                                      (Movq, [R09, ~$ (size_ty ctxt.tdecls array_type)]), (*Moves the array type size into R09*)
+                                      (Imulq, [R09, R10]),
+                                      (Addq,  [R08 , R09])]
+    | Struct member_types -> []
+    | _ -> []
+  in
+
+failwith "compile_gep_helper not implemented"
+
+let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list = begin
+let open Asm in
+  match op with
+    | (Ptr ptr_type, operand_identifier) -> 
+      (*Calculates base address, to which compile_gep_offset adds the offset*)
+      let (operand_type, operand_base_address) = op in
+      let load_base_address_ins = begin 
+        match operand_base_address with
+          | Null -> failwith "invalid base address"
+          | _ -> compile_operand ctxt (Reg R08) operand_base_address
+      end in compile_gep_offset ctxt ptr_type path
+    | (_, _) -> failwith "compile_gep: not a pointer"
+  failwith "compile_gep not implemented"
 end
 
 
@@ -267,7 +278,7 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
     let open Asm in
     match t with 
     | Ret (t, Some op) -> [   (* idk whats with the type, ignore for now *)
-        compile_operand_temp ctxt ~%Rax op;
+        compile_operand ctxt ~%Rax op;
         (Jmp, [ ~$$(mk_return_lbl fn) ])
     ] 
     | Ret (t, None) -> [
@@ -277,7 +288,7 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
         (Jmp, [ ~$$(mk_lbl fn lbl) ])
     ]
     | Cbr (op, lbl1, lbl2) -> [
-        compile_operand_temp ctxt ~%Rax op;
+        compile_operand ctxt ~%Rax op;
         (Andq, [ ~$1; ~%Rax ]); (* only look at last bit, unsure if necessary *)
         (Cmpq, [ ~$1; ~%Rax ]);
         (J Eq, [ ~$$ (mk_lbl fn lbl1) ]);
