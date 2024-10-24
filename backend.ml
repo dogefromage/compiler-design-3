@@ -95,7 +95,7 @@ let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
       | Const x -> Movq, [ Imm (Lit x); dest ]
       | Id u -> Movq, [ lookup ctxt.layout u; dest ]
       | Gid g -> Leaq, [ Ind3 (Lbl (Platform.mangle g), Rip); dest]
-  end
+  end 
 
 
 (* compiling call  ---------------------------------------------------------- *)
