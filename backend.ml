@@ -191,29 +191,39 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
   (*The instructions required to add the offset for the current type (Array/Struct)*)
   let add_insns = 
     match current_type with
-    | Array (length, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)), (*Loads the current indexvalue into R10*)
-                                      (Movq, [R09, ~$ (size_ty ctxt.tdecls array_type)]), (*Moves the array type size into R09*)
-                                      (Imulq, [R09, R10]),
-                                      (Addq,  [R08 , R09])]
-    | Struct member_types -> []
-    | _ -> []
-  in
+    | Array (_, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)); (*Loads the current indexvalue into R10*)
+                                      (Movq, [(Reg R09); ~$ (size_ty ctxt.tdecls array_type)]); (*Moves the array type size into R09*)
+                                      (Imulq, [Reg R09; Reg R10]);
+                                      (Addq,  [Reg R08 ; Reg R09])]
+    | Struct member_types -> 
+      let index_operand = List.nth path 0 in
+      let index = match index_operand with
+        | Const i -> i
+        | _ -> failwith "compile_gep_offset: index to struct isn't Const"
+      in
+      (*Helper function to calculate the offset of the ind'th struct member*)
+      let rec get_struct_member_offset off types ind = match types, ind with
+        | [], _ -> failwith "Invalid struct-index"
+        | t::_, 0 -> off
+        | t::ts, i -> get_struct_member_offset (off + (size_ty ctxt.tdecls t)) ts (i - 1)
+      in 
+      let member_offset = get_struct_member_offset 0 member_types (Int64.to_int index) in
+      [ (Addq, [Reg R08; ~$ member_offset]) ]
+    | _ -> failwith "invalid path in gep"
+  in add_insns
 
-failwith "compile_gep_helper not implemented"
-
+(*Address is gets stored in R08*)
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list = begin
 let open Asm in
   match op with
     | (Ptr ptr_type, operand_identifier) -> 
       (*Calculates base address, to which compile_gep_offset adds the offset*)
-      let (operand_type, operand_base_address) = op in
       let load_base_address_ins = begin 
-        match operand_base_address with
+        match operand_identifier with
           | Null -> failwith "invalid base address"
-          | _ -> compile_operand ctxt (Reg R08) operand_base_address
-      end in compile_gep_offset ctxt ptr_type path
+          | _ -> compile_operand ctxt (Reg R08) operand_identifier
+      end in load_base_address_ins::(compile_gep_offset ctxt ptr_type path)
     | (_, _) -> failwith "compile_gep: not a pointer"
-  failwith "compile_gep not implemented"
 end
 
 
