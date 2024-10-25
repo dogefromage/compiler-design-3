@@ -176,7 +176,7 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
        within the struct of the n'th element is determined by the
        sizes of the types of the previous elements ]
 
-     - if t is an array, the index can be any operand, and its
+     - if t is an array, the index can be any operand, and its 
        value determines the offset within the array.
 
      - if t is any other type, the path is invalid
@@ -197,7 +197,7 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
                                       (Addq,  [Reg R08 ; Reg R09])]
     | Struct member_types -> 
       let index_operand = List.nth path 0 in
-      let index = match index_operand with
+      let index = match index_operand with 
         | Const i -> i
         | _ -> failwith "compile_gep_offset: index to struct isn't Const"
       in
