@@ -95,7 +95,7 @@ let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
       | Const x -> Movq, [ Imm (Lit x); dest ]
       | Id u -> Movq, [ lookup ctxt.layout u; dest ]
       | Gid g -> Leaq, [ Ind3 (Lbl (Platform.mangle g), Rip); dest]
-  end 
+  end
 
 
 (* compiling call  ---------------------------------------------------------- *)
@@ -176,7 +176,7 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
        within the struct of the n'th element is determined by the
        sizes of the types of the previous elements ]
 
-     - if t is an array, the index can be any operand, and its
+     - if t is an array, the index can be any operand, and its 
        value determines the offset within the array.
 
      - if t is any other type, the path is invalid
@@ -191,14 +191,13 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
   (*The instructions required to add the offset for the current type (Array/Struct)*)
   let add_insns = 
     match current_type with
-<<<<<<< HEAD
     | Array (_, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)); (*Loads the current indexvalue into R10*)
                                       (Movq, [(Reg R09); ~$ (size_ty ctxt.tdecls array_type)]); (*Moves the array type size into R09*)
                                       (Imulq, [Reg R09; Reg R10]);
                                       (Addq,  [Reg R08 ; Reg R09])]
     | Struct member_types -> 
       let index_operand = List.nth path 0 in
-      let index = match index_operand with
+      let index = match index_operand with 
         | Const i -> i
         | _ -> failwith "compile_gep_offset: index to struct isn't Const"
       in
@@ -214,40 +213,17 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
   in add_insns
 
 (*Address is gets stored in R08*)
-=======
-    | Array (length, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)), (*Loads the current indexvalue into R10*)
-                                      (Movq, [R09, ~$ (size_ty ctxt.tdecls array_type)]), (*Moves the array type size into R09*)
-                                      (Imulq, [R09, R10]),
-                                      (Addq,  [R08 , R09])]
-    | Struct member_types -> []
-    | _ -> []
-  in
-
-failwith "compile_gep_helper not implemented"
-
->>>>>>> upstream/master
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list = begin
 let open Asm in
   match op with
     | (Ptr ptr_type, operand_identifier) -> 
       (*Calculates base address, to which compile_gep_offset adds the offset*)
-<<<<<<< HEAD
       let load_base_address_ins = begin 
         match operand_identifier with
           | Null -> failwith "invalid base address"
           | _ -> compile_operand ctxt (Reg R08) operand_identifier
       end in load_base_address_ins::(compile_gep_offset ctxt ptr_type path)
     | (_, _) -> failwith "compile_gep: not a pointer"
-=======
-      let (operand_type, operand_base_address) = op in
-      let load_base_address_ins = begin 
-        match operand_base_address with
-          | Null -> failwith "invalid base address"
-          | _ -> compile_operand ctxt (Reg R08) operand_base_address
-      end in compile_gep_offset ctxt ptr_type path
-    | (_, _) -> failwith "compile_gep: not a pointer"
-  failwith "compile_gep not implemented"
->>>>>>> upstream/master
 end
 
 
@@ -313,6 +289,7 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
     match t with 
     | Ret (t, Some op) -> [   (* idk whats with the type, ignore for now *)
         compile_operand ctxt ~%Rax op;
+        compile_operand ctxt ~%Rax op;
         (Jmp, [ ~$$(mk_return_lbl fn) ])
     ] 
     | Ret (t, None) -> [
@@ -322,6 +299,7 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
         (Jmp, [ ~$$(mk_lbl fn lbl) ])
     ]
     | Cbr (op, lbl1, lbl2) -> [
+        compile_operand ctxt ~%Rax op;
         compile_operand ctxt ~%Rax op;
         (Andq, [ ~$1; ~%Rax ]); (* only look at last bit, unsure if necessary *)
         (Cmpq, [ ~$1; ~%Rax ]);
