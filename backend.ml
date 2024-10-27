@@ -130,7 +130,7 @@ let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.op
       [(compile_operand ctxt (Reg R10) param_operand) ; (Pushq, [Reg R10])]
     in
   let param_instr = List.rev (List.flatten (List.mapi create_param_instructions params)) in
-  let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R10])] in
+  let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R11])] in
   let cleanup_param_instr = [(Addq, [~$ (max(((List.length params) - 6) * 8) 0); Reg Rsp])] in
   let return_instr = [(Movq, [Reg Rax; lookup ctxt.layout uid])] in
   param_instr @ call_instr @ cleanup_param_instr @ return_instr
@@ -247,24 +247,30 @@ end
 (*Not sure, could be using wrong X86 instructions*)
 (*Not sure if correct operand order*)
 let compile_binop_helper (ctxt : ctxt) (uid : uid) (opcode : opcode) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list = 
-  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (opcode, [Reg R08; Reg R09]) ; (Movq, [Reg R08 ; lookup ctxt.layout uid])]
+  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (opcode, [Reg R08; Reg R09]) ; (Movq, [Reg R09 ; lookup ctxt.layout uid])]
 
 let compile_binop (ctxt : ctxt) (uid : uid) (binary_operation : bop) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list =
-match binary_operation with
-| Add -> compile_binop_helper ctxt uid Addq operand2 operand1
-| Sub -> compile_binop_helper ctxt uid Subq operand2 operand1
-| Mul -> compile_binop_helper ctxt uid Imulq operand2 operand1
-| Shl -> compile_binop_helper ctxt uid Shlq operand2 operand1
-| Lshr -> compile_binop_helper ctxt uid Shrq operand2 operand1
-| Ashr -> compile_binop_helper ctxt uid Sarq operand2 operand1
-| And -> compile_binop_helper ctxt uid Andq operand2 operand1
-| Or -> compile_binop_helper ctxt uid Orq operand2 operand1
-| Xor -> compile_binop_helper ctxt uid Xorq operand2 operand1
+  match binary_operation with
+    | Add -> compile_binop_helper ctxt uid Addq operand2 operand1
+    | Sub -> compile_binop_helper ctxt uid Subq operand2 operand1
+    | Mul -> compile_binop_helper ctxt uid Imulq operand2 operand1
+    | Shl -> compile_binop_helper ctxt uid Shlq operand2 operand1
+    | Lshr -> compile_binop_helper ctxt uid Shrq operand2 operand1
+    | Ashr -> compile_binop_helper ctxt uid Sarq operand2 operand1
+    | And -> compile_binop_helper ctxt uid Andq operand2 operand1
+    | Or -> compile_binop_helper ctxt uid Orq operand2 operand1
+    | Xor -> compile_binop_helper ctxt uid Xorq operand2 operand1
 
 
 (*compile compare helper functions*)
 let compile_compare (ctxt : ctxt) (uid : uid) (conditional_code : Ll.cnd) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list =
-  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (Cmpq, [Reg R08; Reg R09]) ; (Set (compile_cnd conditional_code), [lookup ctxt.layout uid])]
+  let open Asm in
+  [ compile_operand ctxt (Reg R08) operand1 ; 
+    compile_operand ctxt (Reg R09) operand2 ; 
+    (Cmpq, [Reg R09; Reg R08]) ; 
+    (Movq, [ ~$0; lookup ctxt.layout uid ]);
+    (Set (compile_cnd conditional_code), [lookup ctxt.layout uid])
+  ]
 
 (* compiling instructions  -------------------------------------------------- *)
 
@@ -294,17 +300,22 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
     match i with
       | Binop (binary_operation, ret_type, operand1, operand2) -> compile_binop ctxt uid binary_operation operand1 operand2
       | Alloca ptr_type -> [(Addq, [~$ (size_ty ctxt.tdecls ptr_type); Reg Rsp]);(Movq, [Reg Rsp; lookup ctxt.layout uid])]
-      | Load (ret_type, operand) -> begin match operand with
-                                      | Null -> failwith "Invalid pointer in Load instruction(Null)"
-                                      | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
-                                      | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand]
-                                    end
-      | Store (ptr_type, operand1, operand2) -> begin match operand2 with
-                                                  | Null -> failwith "Invalid pointer in Store instruction(Null)"
-                                                  | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
-                                                  | Gid lbl -> [compile_operand ctxt (Ind3 (Lbl (Platform.mangle lbl), Rip)) operand1]
-                                                  | Id lbl -> [compile_operand ctxt (lookup ctxt.layout lbl) operand1]
-                                                end
+      | Load (ret_type, operand) -> 
+        begin match operand with
+          | Null -> failwith "Invalid pointer in Load instruction(Null)"
+          | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
+          (* | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand] *)
+          | _ -> [compile_operand ctxt (Reg Rdi) operand; (Movq, [~%Rdi; lookup ctxt.layout uid])]
+        end
+      | Store (ptr_type, operand1, operand2) -> 
+        begin match operand2 with
+          | Null -> failwith "Invalid pointer in Store instruction(Null)"
+          | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
+          (* | Gid lbl -> [compile_operand ctxt (Ind3 (Lbl (Platform.mangle lbl), Rip)) operand1] *)
+          | Gid lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])]
+          (* | Id lbl -> [compile_operand ctxt (lookup ctxt.layout lbl) operand1] *)
+          | Id lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; lookup ctxt.layout lbl])]
+        end
       | Icmp (conditional_code, ty, operand1, operand2) -> compile_compare ctxt uid conditional_code operand1 operand2
       | Bitcast _ -> []
       | Gep (ptr_type, ptr, path) -> (compile_gep ctxt (ptr_type, ptr) path) @ [(Movq, [Reg R08; lookup ctxt.layout uid])]
@@ -355,8 +366,9 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
     ]
     | Cbr (op, lbl1, lbl2) -> [
         compile_operand ctxt ~%Rax op;
-        (Andq, [ ~$1; ~%Rax ]); (* only look at last bit, unsure if necessary *)
+        (Andq, [ ~$1; ~%Rax ]); 
         (Cmpq, [ ~$1; ~%Rax ]);
+        (* (Cmpq, [ ~$1; ~%Rax ]); *)
         (J Eq, [ ~$$ (mk_lbl fn lbl1) ]);
         (Jmp, [ ~$$ (mk_lbl fn lbl2) ]);
     ]
@@ -373,8 +385,8 @@ end
 *)
 let compile_block (fn:string) (ctxt:ctxt) (blk:Ll.block) : ins list = begin
 
-    (* let block_ins = List.concat_map (compile_insn ctxt) blk.insns in *)
-    let block_ins = [] in
+    let block_ins = List.concat_map (compile_insn ctxt) blk.insns in
+    (* let block_ins = [] in *)
 
     let term_ins = compile_terminator fn ctxt (snd blk.term) in
 
@@ -397,12 +409,19 @@ let compile_lbl_block fn lbl ctxt blk : elem =
 
    [ NOTE: the first six arguments are numbered 0 .. 5 ]
 *)
-let arg_loc (n : int) : operand Option.t =
+let arg_loc (n : int) : operand =
     if n > 5 then
-        let imm = Int64.of_int (8 * (n - 5)) in
-        Some (Ind3 (Lit imm, Rbp))
+        let imm = Int64.of_int (8 * (n - 4)) in
+        Ind3 (Lit imm, Rbp)
     else
-        None
+        match n with 
+          | 0 -> Reg Rdi
+          | 1 -> Reg Rsi
+          | 2 -> Reg Rdx
+          | 3 -> Reg Rcx
+          | 4 -> Reg R08
+          | 5 -> Reg R09
+          | _ -> failwith "invalid n"
 
 (* We suggest that you create a helper function that computes the
    stack layout for a given function declaration.
@@ -432,9 +451,10 @@ let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout * int = 
     let push_arg (arg_index: int) (a: uid) : unit = begin 
         match (arg_loc arg_index) with
             (* on parent stack *)
-            | Some op -> lo := (a, op) :: !lo
+            | Ind3 x -> lo := (a, Ind3 x) :: !lo
             (* not on stack, add to current *)
-            | None -> push_uid a
+            | Reg _ -> push_uid a
+            | _ -> failwith "unknown operand"
     end in
 
     List.iteri push_arg args;
@@ -488,7 +508,7 @@ let open Asm in
 
     let layout, layout_rel_rsp = stack_layout f_param f_cfg in
 
-    print_layout name layout;
+    (* print_layout name layout; *)
 
     let ctxt: ctxt = { tdecls; layout } in
 
@@ -530,8 +550,10 @@ let open Asm in
 
     let ll_entry_block, ll_remaining_blocks = f_cfg in
 
-    let asm_entry_block = Asm.text name 
+    let basic_asm_entry_block = Asm.text name 
         (!start_boilerplate @ (compile_block name ctxt ll_entry_block)) in
+    let asm_entry_block = if name = "main" 
+        then { basic_asm_entry_block with global=true } else basic_asm_entry_block in
     
     let asm_intermediate_blocks = List.map 
         (fun (lbl, block) -> compile_lbl_block name lbl ctxt block) ll_remaining_blocks in
