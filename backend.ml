@@ -118,6 +118,22 @@ let open Asm in
    needed). ]
 *)
 
+let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.operand) (params : (ty * Ll.operand) list) : X86.ins list =
+  let open Asm in
+  (*store parameters 1-6 in corresponding registers*)
+  (*store parameters 7-i on the stack*)
+  let param_registers = [Reg Rdi; Reg Rsi; Reg Rdx; Reg Rcx; Reg R08; Reg R09] in
+  let create_param_instructions index (param_type, param_operand) = 
+    if index < 6 then
+      [compile_operand ctxt (List.nth param_registers index) param_operand]
+    else
+      [(compile_operand ctxt (Reg R10) param_operand) ; (Pushq, [Reg R10])]
+    in
+  let param_instr = List.rev (List.flatten (List.mapi create_param_instructions params)) in
+  let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R10])] in
+  let cleanup_param_instr = [(Addq, [~$ (max(((List.length params) - 6) * 8) 0); Reg Rsp])] in
+  let return_instr = [(Movq, [Reg Rax; lookup ctxt.layout uid])] in
+  param_instr @ call_instr @ cleanup_param_instr @ return_instr
 
 
 
@@ -192,15 +208,15 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
   let add_insns = 
     match current_type with
     | Array (_, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)); (*Loads the current indexvalue into R10*)
-                                      (Movq, [(Reg R09); ~$ (size_ty ctxt.tdecls array_type)]); (*Moves the array type size into R09*)
-                                      (Imulq, [Reg R09; Reg R10]);
-                                      (Addq,  [Reg R08 ; Reg R09])]
+                                      (Movq, [~$ (size_ty ctxt.tdecls array_type); (Reg R09)]); (*Moves the array type size into R09*)
+                                      (Imulq, [Reg R10; Reg R09]);
+                                      (Addq,  [Reg R09 ; Reg R08])]
     | Struct member_types -> 
       let index_operand = List.nth path 0 in
-      let index = match index_operand with 
+      let index = begin match index_operand with 
         | Const i -> i
         | _ -> failwith "compile_gep_offset: index to struct isn't Const"
-      in
+      end in
       (*Helper function to calculate the offset of the ind'th struct member*)
       let rec get_struct_member_offset off types ind = match types, ind with
         | [], _ -> failwith "Invalid struct-index"
@@ -208,7 +224,7 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
         | t::ts, i -> get_struct_member_offset (off + (size_ty ctxt.tdecls t)) ts (i - 1)
       in 
       let member_offset = get_struct_member_offset 0 member_types (Int64.to_int index) in
-      [ (Addq, [Reg R08; ~$ member_offset]) ]
+      [ (Addq, [~$ member_offset; Reg R08]) ]
     | _ -> failwith "invalid path in gep"
   in add_insns
 
@@ -227,6 +243,28 @@ let open Asm in
 end
 
 
+(*Binary operation helper functions*)
+(*Not sure, could be using wrong X86 instructions*)
+(*Not sure if correct operand order*)
+let compile_binop_helper (ctxt : ctxt) (uid : uid) (opcode : opcode) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list = 
+  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (opcode, [Reg R08; Reg R09]) ; (Movq, [Reg R08 ; lookup ctxt.layout uid])]
+
+let compile_binop (ctxt : ctxt) (uid : uid) (binary_operation : bop) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list =
+match binary_operation with
+| Add -> compile_binop_helper ctxt uid Addq operand2 operand1
+| Sub -> compile_binop_helper ctxt uid Subq operand2 operand1
+| Mul -> compile_binop_helper ctxt uid Imulq operand2 operand1
+| Shl -> compile_binop_helper ctxt uid Shlq operand2 operand1
+| Lshr -> compile_binop_helper ctxt uid Shrq operand2 operand1
+| Ashr -> compile_binop_helper ctxt uid Sarq operand2 operand1
+| And -> compile_binop_helper ctxt uid Andq operand2 operand1
+| Or -> compile_binop_helper ctxt uid Orq operand2 operand1
+| Xor -> compile_binop_helper ctxt uid Xorq operand2 operand1
+
+
+(*compile compare helper functions*)
+let compile_compare (ctxt : ctxt) (uid : uid) (conditional_code : Ll.cnd) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list =
+  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (Cmpq, [Reg R08; Reg R09]) ; (Set (compile_cnd conditional_code), [lookup ctxt.layout uid])]
 
 (* compiling instructions  -------------------------------------------------- *)
 
@@ -252,7 +290,25 @@ end
    - Bitcast: does nothing interesting at the assembly level
 *)
 let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
-      failwith "compile_insn not implemented"
+  let open Asm in
+    match i with
+      | Binop (binary_operation, ret_type, operand1, operand2) -> compile_binop ctxt uid binary_operation operand1 operand2
+      | Alloca ptr_type -> [(Addq, [~$ (size_ty ctxt.tdecls ptr_type); Reg Rsp]);(Movq, [Reg Rsp; lookup ctxt.layout uid])]
+      | Load (ret_type, operand) -> begin match operand with
+                                      | Null -> failwith "Invalid pointer in Load instruction(Null)"
+                                      | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
+                                      | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand]
+                                    end
+      | Store (ptr_type, operand1, operand2) -> begin match operand2 with
+                                                  | Null -> failwith "Invalid pointer in Store instruction(Null)"
+                                                  | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
+                                                  | Gid lbl -> [compile_operand ctxt (Ind3 (Lbl (Platform.mangle lbl), Rip)) operand1]
+                                                  | Id lbl -> [compile_operand ctxt (lookup ctxt.layout lbl) operand1]
+                                                end
+      | Icmp (conditional_code, ty, operand1, operand2) -> compile_compare ctxt uid conditional_code operand1 operand2
+      | Bitcast _ -> []
+      | Gep (ptr_type, ptr, path) -> (compile_gep ctxt (ptr_type, ptr) path) @ [(Movq, [Reg R08; lookup ctxt.layout uid])]
+      | Call (ret_type, func_operand, params) -> compile_call ctxt uid ret_type func_operand params
 
 
 
