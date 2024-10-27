@@ -89,7 +89,7 @@ let lookup m x = List.assoc x m
    destination (usually a register).
 *)
 let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
-  let open Asm in
+let open Asm in
   fun ll_op -> begin match ll_op with 
       | Null -> Movq, [ ~$0; dest ]
       | Const x -> Movq, [ Imm (Lit x); dest ]
@@ -287,19 +287,17 @@ let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list = be
 
     let open Asm in
     match t with 
-    | Ret (t, Some op) -> [   (* idk whats with the type, ignore for now *)
-        compile_operand ctxt ~%Rax op;
+    | Ret (_, Some op) -> [   (* idk whats with the type, ignore for now *)
         compile_operand ctxt ~%Rax op;
         (Jmp, [ ~$$(mk_return_lbl fn) ])
     ] 
-    | Ret (t, None) -> [
+    | Ret (_, None) -> [
         (Jmp, [ ~$$(mk_return_lbl fn) ])
     ]
     | Br lbl -> [
         (Jmp, [ ~$$(mk_lbl fn lbl) ])
     ]
     | Cbr (op, lbl1, lbl2) -> [
-        compile_operand ctxt ~%Rax op;
         compile_operand ctxt ~%Rax op;
         (Andq, [ ~$1; ~%Rax ]); (* only look at last bit, unsure if necessary *)
         (Cmpq, [ ~$1; ~%Rax ]);
@@ -357,7 +355,6 @@ let arg_loc (n : int) : operand Option.t =
    - in this (inefficient) compilation strategy, each local id
      is also stored as a stack slot.
    - see the discussion about locals
-
 *)
 let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout * int = begin
     (* 
@@ -397,6 +394,23 @@ let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout * int = 
     !lo, !rel_rsp
 end
 
+let print_layout (fname:string)(layout:layout): unit = begin
+    print_endline ("\nlayout of \"" ^ fname ^ "\"");
+    let sorted = List.sort (fun a -> fun b -> begin match a, b with
+        | (_, Ind3 (Lit x, Rbp)), (_, Ind3 (Lit y, Rbp)) -> -Int64.compare x y
+        | _ -> 0
+    end) layout in
+
+    List.iter (fun (uid, op) -> begin 
+        let loc = begin match op with 
+            | Ind3 (Lit x, Rbp) ->
+                Printf.sprintf "%Ld(%%rbp)" x
+            | _ -> "??"
+            end in
+        print_endline (loc ^ " | " ^ "%" ^ uid)
+    end) sorted
+end
+
 (* The code for the entry-point of a function must do several things:
 
    - since our simple compiler maps local %uids to stack slots,
@@ -417,6 +431,8 @@ let compile_fdecl (tdecls:(tid * ty) list) (name:string) ({ f_ty; f_param; f_cfg
 let open Asm in
 
     let layout, layout_rel_rsp = stack_layout f_param f_cfg in
+
+    print_layout name layout;
 
     let ctxt: ctxt = { tdecls; layout } in
 
@@ -470,7 +486,6 @@ let open Asm in
 
     fun_prog
 end
-
 
 
 (* compile_gdecl ------------------------------------------------------------ *)
