@@ -131,7 +131,7 @@ let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.op
     in
   let param_instr = List.rev (List.flatten (List.mapi create_param_instructions params)) in
   let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R10])] in
-  let cleanup_param_instr = [(Addq, [~$ (((List.length params) - 6) * 8); Reg Rsp])] in
+  let cleanup_param_instr = [(Addq, [~$ (max(((List.length params) - 6) * 8) 0); Reg Rsp])] in
   let return_instr = [(Movq, [Reg Rax; lookup ctxt.layout uid])] in
   param_instr @ call_instr @ cleanup_param_instr @ return_instr
 
