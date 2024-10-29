@@ -359,7 +359,7 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
           | Null -> failwith "Invalid pointer in Load instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
           (* | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand] *)
-          | _ -> [
+          | _ -> [ 
               compile_operand ctxt (Reg Rdi) operand; 
               (Movq, [Ind3 (Lit 0L, Rdi); ~%Rdi]); (* follow pointer *)
               (Movq, [~%Rdi; lookup ctxt.layout uid])
@@ -369,13 +369,10 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
         begin match operand2 with
           | Null -> failwith "Invalid pointer in Store instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
-          | Gid lbl -> failwith "idk?"
-            (* [
+          | Gid lbl -> [
               compile_operand ctxt (Reg Rdi) operand1;
-              (Movq, [(Ind3 (Lbl (Platform.mangle lbl), Rip)); ~%Rsi]);
-              (Leaq, [Ind3 (Lit 0L, Rsi); ~%Rsi]); (* follow pointer *)
-              (Movq, [~%Rsi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])
-            ] *)
+              (Movq, [~%Rdi; (Ind3 (Lbl (Platform.mangle lbl), Rip))]);
+            ]
           | Id lbl -> [
               compile_operand ctxt (Reg Rsi) operand1;
               compile_operand ctxt (~%Rdi) operand2;
