@@ -129,7 +129,7 @@ let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.op
     else
       [(compile_operand ctxt (Reg R10) param_operand) ; (Pushq, [Reg R10])]
     in
-  let param_instr = List.rev (List.flatten (List.mapi create_param_instructions params)) in
+  let param_instr = List.flatten (List.mapi create_param_instructions (List.rev params)) in
   let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R11])] in
   let cleanup_param_instr = [(Addq, [~$ (max(((List.length params) - 6) * 8) 0); Reg Rsp])] in
   let return_instr = [(Movq, [Reg Rax; lookup ctxt.layout uid])] in
@@ -247,7 +247,12 @@ end
 (*Not sure, could be using wrong X86 instructions*)
 (*Not sure if correct operand order*)
 let compile_binop_helper (ctxt : ctxt) (uid : uid) (opcode : opcode) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list = 
-  [compile_operand ctxt (Reg R08) operand1 ; compile_operand ctxt (Reg R09) operand2 ; (opcode, [Reg R08; Reg R09]) ; (Movq, [Reg R09 ; lookup ctxt.layout uid])]
+  [
+    compile_operand ctxt (Reg Rcx) operand1; 
+    compile_operand ctxt (Reg Rdx) operand2; 
+    (opcode, [Reg Rcx; Reg Rdx]); 
+    (Movq, [Reg Rdx ; lookup ctxt.layout uid])
+  ]
 
 let compile_binop (ctxt : ctxt) (uid : uid) (binary_operation : bop) (operand1 : Ll.operand) (operand2 : Ll.operand) : X86.ins list =
   match binary_operation with
@@ -267,8 +272,8 @@ let compile_compare (ctxt : ctxt) (uid : uid) (conditional_code : Ll.cnd) (opera
   let open Asm in
   [ compile_operand ctxt (Reg R08) operand1 ; 
     compile_operand ctxt (Reg R09) operand2 ; 
-    (Cmpq, [Reg R09; Reg R08]) ; 
     (Movq, [ ~$0; lookup ctxt.layout uid ]);
+    (Cmpq, [Reg R09; Reg R08]) ; 
     (Set (compile_cnd conditional_code), [lookup ctxt.layout uid])
   ]
 
@@ -305,6 +310,11 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
           | Null -> failwith "Invalid pointer in Load instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
           (* | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand] *)
+          | Gid _ -> [
+              compile_operand ctxt (Reg Rdi) operand; 
+              (Movq, [Ind3 (Lit 0L, Rdi); ~%Rdi]); (* follow pointer *)
+              (Movq, [~%Rdi; lookup ctxt.layout uid])
+            ]
           | _ -> [compile_operand ctxt (Reg Rdi) operand; (Movq, [~%Rdi; lookup ctxt.layout uid])]
         end
       | Store (ptr_type, operand1, operand2) -> 
@@ -312,7 +322,12 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
           | Null -> failwith "Invalid pointer in Store instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
           (* | Gid lbl -> [compile_operand ctxt (Ind3 (Lbl (Platform.mangle lbl), Rip)) operand1] *)
-          | Gid lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])]
+          | Gid lbl -> [
+              compile_operand ctxt (Reg Rdi) operand1;
+              (Movq, [(Ind3 (Lbl (Platform.mangle lbl), Rip)); ~%Rsi]);
+              (Leaq, [Ind3 (Lit 0L, Rsi); ~%Rsi]); (* follow pointer *)
+              (Movq, [~%Rdi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])
+            ]
           (* | Id lbl -> [compile_operand ctxt (lookup ctxt.layout lbl) operand1] *)
           | Id lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; lookup ctxt.layout lbl])]
         end
