@@ -24,4 +24,3 @@ define void @foo(%disju* %pu) {
   %n1 = load i64, i64* %p1
   ret void
 }
-

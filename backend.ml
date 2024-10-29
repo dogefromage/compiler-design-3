@@ -97,7 +97,6 @@ let open Asm in
       | Gid g -> Leaq, [ Ind3 (Lbl (Platform.mangle g), Rip); dest]
   end
 
-
 (* compiling call  ---------------------------------------------------------- *)
 
 (* You will probably find it helpful to implement a helper function that
@@ -202,44 +201,91 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
       by the path so far
 *)
 
+
+(* 
+let gep_off ty (path=p:ps) = 
+  match ty with
+  | Array (size, array_ty) ->
+    p * (size_ty array_ty) + (gep_off array_ty ps)
+  | Struct member_types ->
+    sum (map size_ty (types before tyi)) + (gep_off tyi ps)
+  | Namedt tid ->
+    gep_off (resolve tid) path
+*)
+
+
+(* returns offset in %rax *)
 let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand list) : ins list =
-  let open Asm in
-  (*The instructions required to add the offset for the current type (Array/Struct)*)
-  let add_insns = 
-    match current_type with
-    | Array (_, array_type) -> [ (compile_operand ctxt (Reg R10) (List.nth path 0)); (*Loads the current indexvalue into R10*)
-                                      (Movq, [~$ (size_ty ctxt.tdecls array_type); (Reg R09)]); (*Moves the array type size into R09*)
-                                      (Imulq, [Reg R10; Reg R09]);
-                                      (Addq,  [Reg R09 ; Reg R08])]
-    | Struct member_types -> 
-      let index_operand = List.nth path 0 in
-      let index = begin match index_operand with 
-        | Const i -> i
-        | _ -> failwith "compile_gep_offset: index to struct isn't Const"
-      end in
-      (*Helper function to calculate the offset of the ind'th struct member*)
-      let rec get_struct_member_offset off types ind = match types, ind with
-        | [], _ -> failwith "Invalid struct-index"
-        | t::_, 0 -> off
-        | t::ts, i -> get_struct_member_offset (off + (size_ty ctxt.tdecls t)) ts (i - 1)
-      in 
-      let member_offset = get_struct_member_offset 0 member_types (Int64.to_int index) in
-      [ (Addq, [~$ member_offset; Reg R08]) ]
-    | _ -> failwith "invalid path in gep"
-  in add_insns
+  let open Asm in begin
+    match path with
+      | [] -> [
+        (Movq, ([ ~$0; ~%Rax ])) (* base case *)
+      ]
+      | path_head::path_tail -> begin
+        match current_type with
+        | Array (_, array_type) -> 
+          (* recurse first such that we can add to returned %rax *)
+          (compile_gep_offset ctxt array_type path_tail) @ [
+            (compile_operand ctxt (Reg R10) path_head); (*Loads the current indexvalue into R10*)
+            (Movq, [~$ (size_ty ctxt.tdecls array_type); ~%R09]); (*Moves the array type size into R09*)
+            (Imulq, [Reg R10; ~%R09]); (* holds offset in current type array *)
+            (Addq, [ ~%R09; ~%Rax ]) (* add to nested offset *)
+          ]
+        | Struct member_types -> 
+          let index = begin match path_head with 
+            | Const i -> Int64.to_int i
+            | _ -> failwith "compile_gep_offset: index to struct isn't Const"
+          end in
+          (*Helper function to calculate the offset of the ind'th struct member*)
+          (* let rec get_struct_member_offset off types ind = match types, ind with
+            | [], _ -> failwith "Invalid struct-index"
+            | t::_, 0 -> off
+            | t::ts, i -> get_struct_member_offset (off + (size_ty ctxt.tdecls t)) ts (i - 1)
+          in
+          let member_offset = get_struct_member_offset 0 member_types (Int64.to_int index) in
+          [ (Addq, [~$ member_offset; Reg R08]) ] *)
+
+          let next_type = List.nth member_types index in
+          
+          (* find offset of previous struct members upto selected one *)
+          let prev_offset = ref 0 in
+          for i = 0 to (index - 1) do
+            prev_offset := !prev_offset + size_ty ctxt.tdecls (List.nth member_types i)
+          done;
+          (* recurse first *)
+          (compile_gep_offset ctxt next_type path_tail) @ [
+            (Addq, [~$ !prev_offset; ~%Rax])
+          ]
+        | Namedt tid -> begin
+          let resolved_ty = List.assoc tid ctxt.tdecls in
+          compile_gep_offset ctxt resolved_ty path
+        end
+        | _ -> failwith (Printf.sprintf "invalid path in gep \"%s\"" (Llutil.string_of_ty current_type))
+      end
+  end
 
 (*Address is gets stored in R08*)
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list = begin
-let open Asm in
+  let open Asm in
+  let path_head, path_tail = List.hd path, List.tl path in (* should never be [] whoops *)
   match op with
-    | (Ptr ptr_type, operand_identifier) -> 
-      (*Calculates base address, to which compile_gep_offset adds the offset*)
-      let load_base_address_ins = begin 
-        match operand_identifier with
-          | Null -> failwith "invalid base address"
-          | _ -> compile_operand ctxt (Reg R08) operand_identifier
-      end in load_base_address_ins::(compile_gep_offset ctxt ptr_type path)
-    | (_, _) -> failwith "compile_gep: not a pointer"
+    | (Ptr ptr_type, operand_identifier) -> begin
+
+        let second_to_last_offset_ins = compile_gep_offset ctxt ptr_type (path_tail) in
+        
+        second_to_last_offset_ins @ [ 
+          (* add first offset to rax *)
+          (compile_operand ctxt (Reg R10) path_head); (*Loads the current indexvalue into R10*)
+          (Movq, [~$ (size_ty ctxt.tdecls ptr_type); ~%R09]); (*Moves the array type size into R09*)
+          (Imulq, [Reg R10; ~%R09]); (* holds offset in current type array *)
+          (Addq, [ ~%R09; ~%Rax ]); (* add to nested offset *)
+        
+          (* add root pointer *)
+          compile_operand ctxt (Reg R08) operand_identifier;
+          (Addq, [ ~%Rax; ~%R08 ])
+        ]
+      end
+    | _ -> failwith "compile_gep: not a pointer"
 end
 
 
@@ -304,32 +350,37 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
   let open Asm in
     match i with
       | Binop (binary_operation, ret_type, operand1, operand2) -> compile_binop ctxt uid binary_operation operand1 operand2
-      | Alloca ptr_type -> [(Addq, [~$ (size_ty ctxt.tdecls ptr_type); Reg Rsp]);(Movq, [Reg Rsp; lookup ctxt.layout uid])]
+      | Alloca ptr_type -> [
+          (Pushq, [ ~$0 ]);
+          (Movq, [Reg Rsp; lookup ctxt.layout uid])
+        ]
       | Load (ret_type, operand) -> 
         begin match operand with
           | Null -> failwith "Invalid pointer in Load instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Load instruction(Const)"
           (* | _ -> [compile_operand ctxt (lookup ctxt.layout uid) operand] *)
-          | Gid _ -> [
+          | _ -> [
               compile_operand ctxt (Reg Rdi) operand; 
               (Movq, [Ind3 (Lit 0L, Rdi); ~%Rdi]); (* follow pointer *)
               (Movq, [~%Rdi; lookup ctxt.layout uid])
             ]
-          | _ -> [compile_operand ctxt (Reg Rdi) operand; (Movq, [~%Rdi; lookup ctxt.layout uid])]
         end
       | Store (ptr_type, operand1, operand2) -> 
         begin match operand2 with
           | Null -> failwith "Invalid pointer in Store instruction(Null)"
           | Const _ -> failwith "Invalid pointer in Store instruction(Const)"
-          (* | Gid lbl -> [compile_operand ctxt (Ind3 (Lbl (Platform.mangle lbl), Rip)) operand1] *)
-          | Gid lbl -> [
+          | Gid lbl -> failwith "idk?"
+            (* [
               compile_operand ctxt (Reg Rdi) operand1;
               (Movq, [(Ind3 (Lbl (Platform.mangle lbl), Rip)); ~%Rsi]);
               (Leaq, [Ind3 (Lit 0L, Rsi); ~%Rsi]); (* follow pointer *)
-              (Movq, [~%Rdi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])
+              (Movq, [~%Rsi; (Ind3 (Lbl (Platform.mangle lbl), Rip))])
+            ] *)
+          | Id lbl -> [
+              compile_operand ctxt (Reg Rsi) operand1;
+              compile_operand ctxt (~%Rdi) operand2;
+              (Movq, [~%Rsi; Ind3 (Lit 0L, Rdi)])
             ]
-          (* | Id lbl -> [compile_operand ctxt (lookup ctxt.layout lbl) operand1] *)
-          | Id lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; lookup ctxt.layout lbl])]
         end
       | Icmp (conditional_code, ty, operand1, operand2) -> compile_compare ctxt uid conditional_code operand1 operand2
       | Bitcast (ty1, op, ty2) -> [
@@ -337,7 +388,10 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
         compile_operand ctxt (~%Rcx) op;
         (Movq, [~%Rdi; lookup ctxt.layout uid])
       ]
-      | Gep (ptr_type, ptr, path) -> (compile_gep ctxt (ptr_type, ptr) path) @ [(Movq, [Reg R08; lookup ctxt.layout uid])]
+      | Gep (ptr_type, ptr, path) -> 
+          (compile_gep ctxt (ptr_type, ptr) path) @ [
+            (Movq, [Reg R08; lookup ctxt.layout uid])
+          ]
       | Call (ret_type, func_operand, params) -> compile_call ctxt uid ret_type func_operand params
 
 
