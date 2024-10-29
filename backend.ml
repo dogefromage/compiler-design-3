@@ -332,7 +332,11 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
           | Id lbl -> [compile_operand ctxt (Reg Rdi) operand1; (Movq, [~%Rdi; lookup ctxt.layout lbl])]
         end
       | Icmp (conditional_code, ty, operand1, operand2) -> compile_compare ctxt uid conditional_code operand1 operand2
-      | Bitcast _ -> []
+      | Bitcast (ty1, op, ty2) -> [
+        (* just copy to new uid *)
+        compile_operand ctxt (~%Rcx) op;
+        (Movq, [~%Rdi; lookup ctxt.layout uid])
+      ]
       | Gep (ptr_type, ptr, path) -> (compile_gep ctxt (ptr_type, ptr) path) @ [(Movq, [Reg R08; lookup ctxt.layout uid])]
       | Call (ret_type, func_operand, params) -> compile_call ctxt uid ret_type func_operand params
 
