@@ -117,24 +117,68 @@ let open Asm in
    needed). ]
 *)
 
-let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.operand) (params : (ty * Ll.operand) list) : X86.ins list =
+let compile_call (ctxt : ctxt) (uid : uid) (ret_type : ty) (func_operand : Ll.operand) (params : (ty * Ll.operand) list) : X86.ins list = begin
   let open Asm in
-  (*store parameters 1-6 in corresponding registers*)
-  (*store parameters 7-i on the stack*)
+  (* 
+    - push rbx since it is callee saved
+    - save rsp in rbx
+    - align stack
+    - add empty quad if odd number of args
+    - add args in reverse order
+    - call
+    - save return address
+    - load rsp from rbx
+    - pop rbx
+  *)
+
+  let instructions = ref [] in
+
+  instructions := !instructions @ [
+    (Pushq, [ ~%Rbx ]);
+    (Movq, [ ~%Rsp; ~%Rbx ]);
+    (* align *)
+    (Andq, [ Imm (Lit (0xFFFFFFFFFFFFFFF0L)); ~%Rsp ]);
+  ];
+
+  let parent_stack_arg_count = Int.max 0 ((List.length params) - 6) in
+
+  if Int.rem parent_stack_arg_count 2 = 1 then begin
+    (* add small buffer such that alignment stays correct *)
+    instructions := !instructions @ [
+      (Pushq, [ ~$69 ]);
+    ]
+  end;
+
+  (* stack args *)
+  for i = (List.length params) - 1 downto 6 do
+    instructions := !instructions @ [
+      (compile_operand ctxt (~%Rax) (snd (List.nth params i))); 
+      (Pushq, [~%Rax])
+    ];
+  done;
+
+  (* register args *)
   let param_registers = [Reg Rdi; Reg Rsi; Reg Rdx; Reg Rcx; Reg R08; Reg R09] in
-  let create_param_instructions index (param_type, param_operand) = 
-    if index < 6 then
-      [compile_operand ctxt (List.nth param_registers index) param_operand]
-    else
-      [(compile_operand ctxt (Reg R10) param_operand) ; (Pushq, [Reg R10])]
-    in
-  let param_instr = List.flatten (List.mapi create_param_instructions (List.rev params)) in
-  let call_instr = [compile_operand ctxt (Reg R11) func_operand ; (Callq, [Reg R11])] in
-  let cleanup_param_instr = [(Addq, [~$ (max(((List.length params) - 6) * 8) 0); Reg Rsp])] in
-  let return_instr = [(Movq, [Reg Rax; lookup ctxt.layout uid])] in
-  param_instr @ call_instr @ cleanup_param_instr @ return_instr
 
+  for i = Int.min (List.length params - 1) 5 downto 0 do
+    instructions := !instructions @ [
+      (compile_operand ctxt (List.nth param_registers i) (snd (List.nth params i))); 
+    ];
+  done;
 
+  (* call *)
+  instructions := !instructions @ [
+    compile_operand ctxt (~%Rax) func_operand;
+    (Callq, [~%Rax]);
+    (* save return value *)
+    (Movq, [~%Rax; lookup ctxt.layout uid ]);
+    (* restore rsp and rbx *)
+    (Movq, [~%Rbx; ~%Rsp]);
+    (Popq, [~%Rbx])
+  ];
+
+  !instructions
+end
 
 (* compiling getelementptr (gep)  ------------------------------------------- *)
 
@@ -226,9 +270,9 @@ let rec compile_gep_offset (ctxt:ctxt) (current_type : Ll.ty) (path: Ll.operand 
         | Array (_, array_type) -> 
           (* recurse first such that we can add to returned %rax *)
           (compile_gep_offset ctxt array_type path_tail) @ [
-            (compile_operand ctxt (Reg R10) path_head); (*Loads the current indexvalue into R10*)
+            (compile_operand ctxt (Reg R08) path_head); (*Loads the current indexvalue into R08*)
             (Movq, [~$ (size_ty ctxt.tdecls array_type); ~%R09]); (*Moves the array type size into R09*)
-            (Imulq, [Reg R10; ~%R09]); (* holds offset in current type array *)
+            (Imulq, [Reg R08; ~%R09]); (* holds offset in current type array *)
             (Addq, [ ~%R09; ~%Rax ]) (* add to nested offset *)
           ]
         | Struct member_types -> 
@@ -275,9 +319,9 @@ let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : 
         
         second_to_last_offset_ins @ [ 
           (* add first offset to rax *)
-          (compile_operand ctxt (Reg R10) path_head); (*Loads the current indexvalue into R10*)
+          (compile_operand ctxt (Reg R08) path_head); (*Loads the current indexvalue into R08*)
           (Movq, [~$ (size_ty ctxt.tdecls ptr_type); ~%R09]); (*Moves the array type size into R09*)
-          (Imulq, [Reg R10; ~%R09]); (* holds offset in current type array *)
+          (Imulq, [Reg R08; ~%R09]); (* holds offset in current type array *)
           (Addq, [ ~%R09; ~%Rax ]); (* add to nested offset *)
         
           (* add root pointer *)
@@ -382,7 +426,7 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
       | Icmp (conditional_code, ty, operand1, operand2) -> compile_compare ctxt uid conditional_code operand1 operand2
       | Bitcast (ty1, op, ty2) -> [
         (* just copy to new uid *)
-        compile_operand ctxt (~%Rcx) op;
+        compile_operand ctxt (~%Rdi) op;
         (Movq, [~%Rdi; lookup ctxt.layout uid])
       ]
       | Gep (ptr_type, ptr, path) -> 
@@ -588,7 +632,7 @@ let open Asm in
         (* init rbp *)
         (Pushq, [ ~%Rbp ]);
         (Movq, [ ~%Rsp; ~%Rbp ]);
-        (Addq, [ ~$layout_rel_rsp; ~%Rsp ]); 
+        (Addq, [ ~$(layout_rel_rsp); ~%Rsp ]); 
         (* layout_rel_rsp points to the stack pointer after all locals would have been pushq'ed *)
         (* this marks the next calls rsp. rsp should not be modified anywhere else *)
     ] in
@@ -622,7 +666,7 @@ let open Asm in
 
     let basic_asm_entry_block = Asm.text name 
         (!start_boilerplate @ (compile_block name ctxt ll_entry_block)) in
-    let asm_entry_block = if name = "main" 
+    let asm_entry_block = if true (* just make every function global i think there is no problem *)
         then { basic_asm_entry_block with global=true } else basic_asm_entry_block in
     
     let asm_intermediate_blocks = List.map 
@@ -644,7 +688,7 @@ let rec compile_ginit : ginit -> X86.data list = function
   | GNull     -> [Quad (Lit 0L)]
   | GGid gid  -> [Quad (Lbl (Platform.mangle gid))]
   | GInt c    -> [Quad (Lit c)]
-  | GString s -> [Asciz s]
+  | GString s -> [Asciz s; Quad (Lit 0L)]
   | GArray gs | GStruct gs -> List.map compile_gdecl gs |> List.flatten
   | GBitcast (t1,g,t2) -> compile_ginit g
 
