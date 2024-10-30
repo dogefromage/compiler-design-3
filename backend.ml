@@ -688,7 +688,7 @@ let rec compile_ginit : ginit -> X86.data list = function
   | GNull     -> [Quad (Lit 0L)]
   | GGid gid  -> [Quad (Lbl (Platform.mangle gid))]
   | GInt c    -> [Quad (Lit c)]
-  | GString s -> [Asciz s; Quad (Lit 0L)]
+  | GString s -> [Asciz s]
   | GArray gs | GStruct gs -> List.map compile_gdecl gs |> List.flatten
   | GBitcast (t1,g,t2) -> compile_ginit g
 
